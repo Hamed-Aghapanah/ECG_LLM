@@ -1,0 +1,2 @@
+Lead,P_dur (ms),QRS_dur (ms),T_dur (ms),ST_dur (ms),PR_int (ms),QT_int (ms),QTC_int (ms),Q_dur (ms),R_dur (ms),S_dur (ms),P_amp (uV),Q_amp (uV),R_amp (uV),S_amp (uV),T_amp (uV),ST_amp (uV)
+ lead i,59.5,40.0,611.0,192.0,70.5,232.0,4.235721111373285,11.0,29.0,192.0,-11988.744041501794,120878.16127291329,132282.07378789847,-56815.34400958176,13606.89850775817,-56815.34400958176
