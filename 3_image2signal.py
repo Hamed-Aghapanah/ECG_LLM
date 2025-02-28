@@ -1,317 +1,163 @@
+import wfdb
+import matplotlib.pyplot as plt
+from pathlib import Path
+import numpy as np
 import cv2
-import numpy as np
-import matplotlib.pyplot as plt
 import os
-import matplotlib.pyplot as plt
-from scipy.signal import find_peaks, butter, filtfilt, resample
-import neurokit2 as nk
-import pandas as pd
-from tqdm import tqdm
+import json
 
-plt.rcParams['font.family'] = 'Times New Roman'  # تنظیم فونت به Times New Roman
-# plt.rcParams['font.size'] = 16  # تنظیم سایز فونت به 16
-# plt.rcParams['font.weight'] = 'bold'  # تنظیم وزن فونت به bold (اختیاری)
+plt.close("all")
 
-# Close any existing plots
-plt.close('all')
+raw_ecgl_folder = "1_ecg_images"
+mask_folder = "00_masks"
+images_folder = "00_images"
+noisy_folder = "2_noisy_ecg_images"
+json_folder = "0_json_files"
 
-# Path to the noisy images folder
-noisy_folder = '3_denoised_ecg_images'
-ocr_folder = '6_ocr'
-result2_folder='7_result2'
-csv_folder='8_csv'
-os.makedirs(result2_folder, exist_ok=True)
-os.makedirs(csv_folder, exist_ok=True)
+os.makedirs(raw_ecgl_folder, exist_ok=True)
+os.makedirs(mask_folder, exist_ok=True)
+os.makedirs(images_folder, exist_ok=True)
+os.makedirs(noisy_folder, exist_ok=True)
+os.makedirs(json_folder, exist_ok=True)
 
-
+base_path = Path("ptb-diagnostic-ecg-database-1.0.0")
+patient_folders = [
+    f for f in base_path.iterdir() if f.is_dir() and f.name.startswith("patient")
+]
 
 
-import numpy as np
-import matplotlib.pyplot as plt
-from scipy.signal import butter, filtfilt
-import scipy # import signal, datasets
-
-def remove_baseline_drift(signal,fs=20000 ):
-    # Butterworth, first order, 0.5 Hz cutoff
-    lowpass = scipy.signal.butter(1, 0.5, btype='lowpass', fs=fs, output='sos')
-    lowpassed = scipy.signal.sosfilt(lowpass, signal)
-    filtered_signal = signal - lowpassed
-    removed = int (len(filtered_signal)/10)
-    filtered_signal=filtered_signal[removed:-1*removed]
-     
-    
-    return filtered_signal
-
-# Function to identify segments
-def identify_segments(image):
-    gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    _, binary_image = cv2.threshold(gray_image, 200, 255, cv2.THRESH_BINARY_INV)
-    contours, _ = cv2.findContours(binary_image, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    segments = [cnt for cnt in contours if cv2.contourArea(cnt) > 50]  # Area threshold
-    return segments
-
-# Function to remove border and crop the image
-def remove_border_and_crop(image):
-    gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    B = max(int(np.shape(image)[0] / 100), 5)
-    _, binary_image = cv2.threshold(gray_image, 200, 255, cv2.THRESH_BINARY_INV)
-    contours, _ = cv2.findContours(binary_image, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    # Find the largest contour (border)
-    largest_contour = max(contours, key=cv2.contourArea)
-    
-    # Get bounding rectangle coordinates
-    x, y, w, h = cv2.boundingRect(largest_contour)
-    
-    # Crop the image
-    cropped_image = image[y+B:y+h-B, x+B:x+w-B]
-    
-    return cropped_image
-
-# Function to merge overlapping contours based on vertical overlap
-def merge_vertical_contours(segments):
-    if not segments:
-        return []
-
-    merged_contours = []
-    processed = [False] * len(segments)  # Track processed contours
-    
-    for i in range(len(segments)):
-        if processed[i]:
-            continue
-        
-        base_contour = segments[i]
-        overlapping = [base_contour]
-        
-        base_rect = cv2.boundingRect(base_contour)
-
-        for j in range(i + 1, len(segments)):
-            if processed[j]:
-                continue
-            
-            cnt = segments[j]
-            cnt_rect = cv2.boundingRect(cnt)
-            
-            # Check for vertical overlap
-            if (base_rect[1] < cnt_rect[1] + cnt_rect[3] and
-                base_rect[1] + base_rect[3] > cnt_rect[1]):
-                overlapping.append(cnt)
-                processed[j] = True  # Mark this contour as processed
-
-        # Merge contours using convex hull
-        merged_contour = np.vstack(overlapping)
-        merged_contour = cv2.convexHull(merged_contour)
-        merged_contours.append(merged_contour)
-
-        processed[i] = True  # Mark the base contour as processed
-
-    return merged_contours
-
-# Function to perform multiple merges and display results
-def process_images(noisy_folder,ocr_folder= '6_ocr' , iterations=5):
-    segments_all = []
-    for filename in os.listdir(noisy_folder) :
-        if filename.endswith('.png') and  not 'pattern' in filename.lower():
-            patteint_no=filename.replace('denoised_', '')
-            patteint_no=patteint_no.replace('.png', '')
-            print('patteint_no =',patteint_no)
-            # print('filename ',filename)
-            image_path = os.path.join(noisy_folder, filename)
-            image = cv2.imread(image_path)
-            # Remove border and crop the image
-            cropped_image = remove_border_and_crop(image)
-            import copy
-            cropped_image001 = copy.deepcopy(cropped_image)
-            segments = identify_segments(cropped_image)
-            
-            for _ in range(iterations):
-                segments = merge_vertical_contours(segments)
-            print(np.shape(segments))
-            
-            plt.figure(1)
-            plt.subplot(2, 2, 1)
-            plt.title('Original Image')
-            plt.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-            plt.axis('off')
-            
-            max_x=[]; max_y=[]
-            min_y=[]; min_x=[]
-            
-
-            # Draw merged contours on the cropped image with random colors
-            for merged_segment in segments:
-                random_color = tuple(np.random.randint(0, 256, 3).tolist())
-                cv2.drawContours(cropped_image, [merged_segment], -1, random_color, 2)  # Draw contours with random color
-
-                x=[]
-                y=[]
-                for i in range(len(merged_segment)):
-                    x.append(  merged_segment[i,0,0])
-                    y.append(  merged_segment[i][0,1])
-                
-                max_x.append(np.max(np.max(x)))
-                max_y.append(np.max(np.max(y)))
-                min_y.append(np.min(np.min(y)))
-                min_x.append(np.min(np.min(x)))
-            
-            print(np.shape(min_x))
-            if np.shape(min_x)[0] ==1:
-                cropped_image = remove_border_and_crop(image)
-                print(np.shape(cropped_image ))
-                print(min_y)
-                
-                
-                min_y=int(min_y)
-                max_y=int(max_y)
-                min_x=int(min_x)
-                max_x=int(max_x)
-                
-                x=cropped_image [ min_y:max_y , min_x:max_x  , :]
-                cropped_image001 = copy.deepcopy(x)
-                segments = identify_segments(cropped_image)
-                
-                for _ in range(iterations):
-                    segments = merge_vertical_contours(segments)
-                print(np.shape(segments))
-                
-                plt.figure(1)
-                plt.subplot(2, 2, 1)
-                plt.title('Original Image')
-                plt.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-                plt.axis('off')
-                
-                max_x=[]; max_y=[]
-                min_y=[]; min_x=[]
-                
-
-                # Draw merged contours on the cropped image with random colors
-                for merged_segment in segments:
-                    random_color = tuple(np.random.randint(0, 256, 3).tolist())
-                    cv2.drawContours(cropped_image, [merged_segment], -1, random_color, 2)  # Draw contours with random color
-                    x=[]
-                    y=[]
-                    for i in range(len(merged_segment)):
-                        x.append(  merged_segment[i,0,0])
-                        y.append(  merged_segment[i][0,1])
-                    max_x.append(np.max(np.max(x)))
-                    max_y.append(np.max(np.max(y)))
-                    min_y.append(np.min(np.min(y)))
-                    min_x.append(np.min(np.min(x)))
-                    
-                
-            print( ' np.shape(merged_segment) ' ,np.shape(merged_segment))
-            # print(max_x,max_y)    
-            plt.subplot(2, 2, 3)
-            plt.title('Cropped Image (Merged Contours)')
-            plt.imshow(cv2.cvtColor(cropped_image, cv2.COLOR_BGR2RGB))
-            plt.axis('off')
-            
-            
-            
-            S=0
-            signal_all=[]
-            
-            all_results = []
-
-            LEAD_name = [
-            "i", "ii", "iii", 
-            "avr", "avl", "avf", 
-            "v1", "v2", "v3", 
-            "v4", "v5", "v6", 
-            "vx", "vy", "vz"                ]
-            
-            # for i in range (len(segments)):
-            for i in tqdm(range(len(segments)), desc="Processing segments"):
-                merged_segment = segments[i]  
-                S=S+4
-                signal=[]
-                plt.figure(1)
-                plt.subplot(len(segments), 4, S-1)
-                if i==0:
-                    plt.title('Cropped Image ' )
-                
-                plt.imshow(cv2.cvtColor(cropped_image001[min_y[i]:max_y[i] , : ], cv2.COLOR_BGR2RGB))
-                plt.axis('off')
-                sss
-                image_Signal_i = cv2.cvtColor(cropped_image001[min_y[i]:max_y[i] , : ], cv2.COLOR_BGR2RGB)
-                temp = copy.deepcopy( image_Signal_i)
-                for y in range(np.shape(image_Signal_i)[1]):                      
-                    temp[:,y ,0]=0
-                    
-
-                    image_Signal_iy=image_Signal_i[:,y ,0]
-                    image_Signal_iy=image_Signal_iy[: ]
-                    index = np.argmin(image_Signal_iy)
-                    min_value = min (image_Signal_iy)
-                    
-                    if not min_value == image_Signal_i  [0,0,0]:
-                        signal.append(-1*index)
-               
-                signal = remove_baseline_drift(signal, fs=200)
-                np.savez('ecg.npz', signal=signal)
-                
-                
-                ecg_signal =  signal
-                from ECG_EX import ECG_extract_qrs
-                
-                Lead_name =' lead '+LEAD_name[i]
-                
-                
-                
-                out_path_image001  = result2_folder +'/'+patteint_no+Lead_name+'.png'
-                
-                results = ECG_extract_qrs(ecg_signal,out_path_image=out_path_image001 ,lead =Lead_name,dpi=600)
-                
-                results['Lead'] = Lead_name
-                
-                all_results.append(results)
-                
-                signal_all.append(signal)    
-                
-                plt.figure(1)
-                plt.subplot(len(segments), 4, S )
-                plt.plot(signal )
-                plt.axis('off')
-                if i==0:
-                    plt.title('OCR Image  to signal' )
-                    
-                print(i)
-                
-                 
-            
-            plt.show()
-            segments_all.append(segments)
-            
-            print(f'Number of merged segments for {filename}: {len(segments)}')
-            # print(maxx ,minn)
-            ocr_folder_path = f"{ocr_folder}/{patteint_no}.png"
-            try:
-                plt.savefig(ocr_folder_path, bbox_inches='tight', pad_inches=0.5, dpi=300)  # افزایش رزولوشن به 600 dpi
-            except:
-                print('eerroorr' , ocr_folder_path)
-                pass
-            plt.close('all')
-            
-            # Convert the list of dictionaries to a DataFrame
-            df = pd.DataFrame(all_results)
-            
-            # Reorder columns to have 'Lead' as the first column
-            columns = ['Lead'] + [col for col in df.columns if col != 'Lead']
-            df = df[columns]
-            
-            # Save the DataFrame to a CSV file
-            filename_csv = csv_folder+'/ecg_results '+ str(patteint_no)+ '.csv'
-            filename_xlsx =csv_folder+ '/ecg_results '+ str(patteint_no)+ '.xlsx'
-            df.to_csv( filename_csv, index=False)
-            
-            df.to_excel(filename_xlsx, index=False)
-            
+def add_salt_pepper_noise(image, salt_prob=0.01, pepper_prob=0.01):
+    noisy_image = np.copy(image)
+    salt_mask = np.random.rand(*image.shape) < salt_prob
+    noisy_image[salt_mask] = 255
+    pepper_mask = np.random.rand(*image.shape) < pepper_prob
+    noisy_image[pepper_mask] = 0
+    return noisy_image
 
 
-            # 
-        
-    return segments_all
+def create_ecg_like_image(signals, lead_names, patient_name):
+    bias = 0
+    for i in range(len(lead_names)):
+        if i > 0:
+            max_amplitude = np.abs(np.min(signals[:, i])) + np.abs(
+                np.max(signals[:, i - 1])
+            )
+            bias += max_amplitude * 1.1
+        plt.plot(signals[:, i] + bias, label=f"Lead {lead_names[i]}", linewidth=0.5)
 
-# Process images with multiple merges
-segments_all = process_images(noisy_folder,ocr_folder, iterations=5)
-print(f'Number of merged segments: {len(segments_all)}')
+    image_path = f"{raw_ecgl_folder}/{patient_name}.png"
+    plt.savefig(image_path, bbox_inches="tight", pad_inches=0.5, dpi=600)
+    plt.close()
+
+    A = plt.imread(image_path)
+    image_path2 = f"{mask_folder}/{patient_name}.png"
+    a1 = int(np.shape(A)[1] * 275 / 1925)
+    a2 = int(np.shape(A)[1] * 1653 / 1925)
+    b1 = int(np.shape(A)[0] * 210 / 1925)
+    b2 = int(np.shape(A)[0] * 1240 / 1477)
+    B = A[b1:b2, a1:a2, :]
+    if len(B.shape) == 3:
+        B = cv2.cvtColor(B, cv2.COLOR_BGR2GRAY)
+    _, B_binarized = cv2.threshold(B, thresh=1, maxval=255, type=cv2.THRESH_BINARY)
+    cv2.imwrite(image_path2, 255 - B * 255)
+
+    pattern = plt.imread("pattern.jpg")[:, :, 0]
+    ECG_noisy = (
+        plt.imread(image_path)[:, :, 0]
+        * plt.imread(image_path)[:, :, 1]
+        * plt.imread(image_path)[:, :, 2]
+    )
+    new_size = np.shape(ECG_noisy)
+    ECG_noisy = cv2.resize(ECG_noisy, [new_size[1], new_size[0]])
+    p = cv2.resize(pattern, [new_size[1], new_size[0]])
+    a = p * ECG_noisy + ECG_noisy
+    plt.imshow(a, cmap="gray")
+    ax = plt.gca()
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.spines["bottom"].set_visible(False)
+    ax.spines["left"].set_visible(False)
+    plt.grid(False)
+    plt.legend(loc="upper left", bbox_to_anchor=(1, 1), fontsize=10)
+    plt.tight_layout()
+    image_path_patt = f"{raw_ecgl_folder}/pattern_{patient_name}.png"
+    plt.savefig(image_path_patt, bbox_inches="tight", pad_inches=0.5, dpi=600)
+    plt.close()
+
+    image_path2 = f"{images_folder}/pattern_{patient_name}.png"
+    p = cv2.resize(pattern, [np.shape(B)[1], np.shape(B)[0]])
+    B = B / np.max(B)
+    p = p / np.max(p)
+    B = 1 - ((1 - B) + (1 - p)) * 1
+    plt.plot(B)
+    if len(B.shape) == 3:
+        B = cv2.cvtColor(B, cv2.COLOR_BGR2GRAY)
+    _, B_binarized = cv2.threshold(B, thresh=1, maxval=255, type=cv2.THRESH_BINARY)
+    cv2.imwrite(image_path2, B * 255)
+    plt.close("all")
+
+    return image_path, image_path_patt
+
+
+def read_xyz_file(xyz_path):
+    try:
+        with open(xyz_path, "r", encoding="latin-1") as file:
+            xyz_data = file.read()
+        return xyz_data
+    except Exception as e:
+        print(f"Error reading XYZ file: {e}")
+        return None
+
+
+def process_patient_folder(patient_folder):
+    record_files = list(patient_folder.glob("*.hea"))
+    if not record_files:
+        print(f"No records found in {patient_folder.name}")
+        return
+
+    record_name = record_files[0].stem
+    signals, fields = wfdb.rdsamp(str(patient_folder / record_name))
+
+    hea_info = {
+        "n_sig": fields["n_sig"],
+        "fs": fields["fs"],
+        "sig_name": fields["sig_name"],
+        "units": fields["units"],
+        "comments": fields["comments"],
+    }
+
+    xyz_file = list(patient_folder.glob("*.xyz"))
+    xyz_info = None
+    if xyz_file:
+        xyz_info = read_xyz_file(xyz_file[0])
+
+    json_data = {"hea_info": hea_info}
+
+    json_path = f"{json_folder}/{patient_folder.name}.json"
+    with open(json_path, "w") as json_file:
+        json.dump(json_data, json_file, indent=4)
+
+    lead_names = fields["sig_name"]
+    patient_name = patient_folder.name
+    ecg_image_path, ecg_image_path_patt = create_ecg_like_image(
+        signals, lead_names, patient_name
+    )
+
+    image = cv2.imread(ecg_image_path)
+    noisy_image = add_salt_pepper_noise(image)
+    noisy_image_path = f"{noisy_folder}/{patient_name}_noisy.png"
+    cv2.imwrite(noisy_image_path, noisy_image)
+
+    image_patt = cv2.imread(ecg_image_path_patt)
+    noisy_image_patt = add_salt_pepper_noise(image_patt)
+    noisy_image_path_patt = f"{noisy_folder}/pattern_{patient_name}_noisy.png"
+    cv2.imwrite(noisy_image_path_patt, noisy_image_patt)
+
+
+for patient_folder in patient_folders:
+    print(f"Processing {patient_folder.name}...")
+    process_patient_folder(patient_folder)
+
+print("Done!")
