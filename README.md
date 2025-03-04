@@ -18,6 +18,54 @@ This repository contains the code and resources for the research article titled 
 
 ## Key Components of the Research
 
+### Dataset 
+Downloading the Dataset
+To download the dataset, follow these steps:
+
+Visit the PTB Diagnostic ECG Database page on PhysioNet.
+
+Click the Download ZIP button to download the entire dataset as a compressed file.
+
+Extract the contents of the ZIP file to a directory of your choice (e.g., data/ptbdb/).
+```bash
+wget -r -N -c -np https://physionet.org/files/ptbdb/1.0.0/
+# or 
+import wfdb
+
+# Load a sample ECG record
+record = wfdb.rdrecord('data/ptbdb/patient001/s0010_re')
+signals = record.p_signal  # ECG signals
+fields = record.__dict__   # Metadata
+
+
+
+data/
+
+└── ptbdb/
+
+    ├── patient001/
+
+    │   ├── s0010_re.dat
+
+    │   ├── s0010_re.hea
+
+    │   └── s0010_re.atr
+
+    ├── patient002/
+
+    │   ├── s0014lre.dat
+
+    │   ├── s0014lre.hea
+
+    │   └── s0014lre.atr
+
+    └── ...
+```
+
+```bibtex
+@article{bousseljot2005nutzung,  title={Nutzung der EKG-Signaldatenbank CARDIODAT der PTB über das Internet},  author={Bousseljot, R and Kreiseler, D and Schnabel, A},  journal={Biomedizinische Technik/Biomedical Engineering},
+  volume={50},  number={s1},  pages={317--318},  year={2005},  publisher={De Gruyter}}
+```
 ### Signal-to-Image Conversion
 The raw ECG signals are converted into visual representations using the `1_ECG_reader.py` script. This step involves plotting the ECG signals for each lead and adding noise to simulate real-world conditions.
 
