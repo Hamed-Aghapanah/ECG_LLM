@@ -21,8 +21,7 @@ This repository contains the code and resources for the research article titled 
 ### Dataset 
 Downloading the Dataset
 To download the dataset, follow these steps:
-
-Visit the PTB Diagnostic ECG Database page on PhysioNet.
+Visit the PTB Diagnostic ECG Database page on PhysioNet [PTB Diagnostic ECG Database](https://physionet.org/content/ptbdb/1.0.0/ "PTB Diagnostic ECG Database").
 
 Click the Download ZIP button to download the entire dataset as a compressed file.
 
@@ -42,23 +41,14 @@ fields = record.__dict__   # Metadata
 data/
 
 └── ptbdb/
-
     ├── patient001/
-
     │   ├── s0010_re.dat
-
     │   ├── s0010_re.hea
-
     │   └── s0010_re.atr
-
     ├── patient002/
-
     │   ├── s0014lre.dat
-
     │   ├── s0014lre.hea
-
     │   └── s0014lre.atr
-
     └── ...
 ```
 
