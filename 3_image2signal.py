@@ -1,163 +1,352 @@
-import wfdb
-import matplotlib.pyplot as plt
-from pathlib import Path
-import numpy as np
 import cv2
+import numpy as np
+import matplotlib.pyplot as plt
 import os
-import json
+import scipy.signal
+import neurokit2 as nk
+import pandas as pd
+from tqdm import tqdm
+import copy
 
-plt.close("all")
-
-raw_ecgl_folder = "1_ecg_images"
-mask_folder = "00_masks"
-images_folder = "00_images"
-noisy_folder = "2_noisy_ecg_images"
-json_folder = "0_json_files"
-
-os.makedirs(raw_ecgl_folder, exist_ok=True)
-os.makedirs(mask_folder, exist_ok=True)
-os.makedirs(images_folder, exist_ok=True)
-os.makedirs(noisy_folder, exist_ok=True)
-os.makedirs(json_folder, exist_ok=True)
-
-base_path = Path("ptb-diagnostic-ecg-database-1.0.0")
-patient_folders = [
-    f for f in base_path.iterdir() if f.is_dir() and f.name.startswith("patient")
-]
+enable_plot = False 
+enable_plot = True 
 
 
-def add_salt_pepper_noise(image, salt_prob=0.01, pepper_prob=0.01):
-    noisy_image = np.copy(image)
-    salt_mask = np.random.rand(*image.shape) < salt_prob
-    noisy_image[salt_mask] = 255
-    pepper_mask = np.random.rand(*image.shape) < pepper_prob
-    noisy_image[pepper_mask] = 0
-    return noisy_image
 
 
-def create_ecg_like_image(signals, lead_names, patient_name):
-    bias = 0
-    for i in range(len(lead_names)):
-        if i > 0:
-            max_amplitude = np.abs(np.min(signals[:, i])) + np.abs(
-                np.max(signals[:, i - 1])
-            )
-            bias += max_amplitude * 1.1
-        plt.plot(signals[:, i] + bias, label=f"Lead {lead_names[i]}", linewidth=0.5)
-
-    image_path = f"{raw_ecgl_folder}/{patient_name}.png"
-    plt.savefig(image_path, bbox_inches="tight", pad_inches=0.5, dpi=600)
-    plt.close()
-
-    A = plt.imread(image_path)
-    image_path2 = f"{mask_folder}/{patient_name}.png"
-    a1 = int(np.shape(A)[1] * 275 / 1925)
-    a2 = int(np.shape(A)[1] * 1653 / 1925)
-    b1 = int(np.shape(A)[0] * 210 / 1925)
-    b2 = int(np.shape(A)[0] * 1240 / 1477)
-    B = A[b1:b2, a1:a2, :]
-    if len(B.shape) == 3:
-        B = cv2.cvtColor(B, cv2.COLOR_BGR2GRAY)
-    _, B_binarized = cv2.threshold(B, thresh=1, maxval=255, type=cv2.THRESH_BINARY)
-    cv2.imwrite(image_path2, 255 - B * 255)
-
-    pattern = plt.imread("pattern.jpg")[:, :, 0]
-    ECG_noisy = (
-        plt.imread(image_path)[:, :, 0]
-        * plt.imread(image_path)[:, :, 1]
-        * plt.imread(image_path)[:, :, 2]
-    )
-    new_size = np.shape(ECG_noisy)
-    ECG_noisy = cv2.resize(ECG_noisy, [new_size[1], new_size[0]])
-    p = cv2.resize(pattern, [new_size[1], new_size[0]])
-    a = p * ECG_noisy + ECG_noisy
-    plt.imshow(a, cmap="gray")
-    ax = plt.gca()
-    ax.set_xticks([])
-    ax.set_yticks([])
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    ax.spines["bottom"].set_visible(False)
-    ax.spines["left"].set_visible(False)
-    plt.grid(False)
-    plt.legend(loc="upper left", bbox_to_anchor=(1, 1), fontsize=10)
-    plt.tight_layout()
-    image_path_patt = f"{raw_ecgl_folder}/pattern_{patient_name}.png"
-    plt.savefig(image_path_patt, bbox_inches="tight", pad_inches=0.5, dpi=600)
-    plt.close()
-
-    image_path2 = f"{images_folder}/pattern_{patient_name}.png"
-    p = cv2.resize(pattern, [np.shape(B)[1], np.shape(B)[0]])
-    B = B / np.max(B)
-    p = p / np.max(p)
-    B = 1 - ((1 - B) + (1 - p)) * 1
-    plt.plot(B)
-    if len(B.shape) == 3:
-        B = cv2.cvtColor(B, cv2.COLOR_BGR2GRAY)
-    _, B_binarized = cv2.threshold(B, thresh=1, maxval=255, type=cv2.THRESH_BINARY)
-    cv2.imwrite(image_path2, B * 255)
-    plt.close("all")
-
-    return image_path, image_path_patt
 
 
-def read_xyz_file(xyz_path):
-    try:
-        with open(xyz_path, "r", encoding="latin-1") as file:
-            xyz_data = file.read()
-        return xyz_data
-    except Exception as e:
-        print(f"Error reading XYZ file: {e}")
-        return None
+plt.rcParams['font.family'] = 'Times New Roman'
+
+plt.close('all')
+
+noisy_folder = '3_denoised_ecg_images'
+ocr_folder = '6_ocr'
+result2_folder = '7_result2'
+csv_folder = '8_csv'
+os.makedirs(result2_folder, exist_ok=True)
+os.makedirs(ocr_folder, exist_ok=True)
+os.makedirs(csv_folder, exist_ok=True)
+
+segments_all = []
+
+for filename in os.listdir(noisy_folder):
+    if filename.endswith('.png') and not 'pattern' in filename.lower():
+        patteint_no = filename.replace('denoised_', '').replace('.png', '')
+        print('patteint_no =', patteint_no)
+        
+        image_path = os.path.join(noisy_folder, filename)
+        image = cv2.imread(image_path)
+        
+        gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        if enable_plot:
+            plt.figure(100)
+            plt.subplot(2, 2, 1)
+            plt.title('Original Image')
+            plt.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+            plt.axis('off')
+        
+        B = max(int(np.shape(image)[0] / 100), 80)
+        _, binary_image = cv2.threshold(gray_image, 200, 255, cv2.THRESH_BINARY_INV)
+        contours, _ = cv2.findContours(binary_image, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        largest_contour = max(contours, key=cv2.contourArea)
+        x, y, w, h = cv2.boundingRect(largest_contour)
+        cropped_image = image[y+B:y+h-B, x+B:x+w-B]
+        
+        cropped_image001=copy.deepcopy(cropped_image)
+        
+        gray_image_cropped = cv2.cvtColor(cropped_image, cv2.COLOR_BGR2GRAY)
+        _, binary_image_cropped = cv2.threshold(gray_image_cropped, 200, 255, cv2.THRESH_BINARY_INV)
+        contours_cropped, _ = cv2.findContours(binary_image_cropped, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        segments = [cnt for cnt in contours_cropped if cv2.contourArea(cnt) > 50]
+        
+        for _ in range(5):
+            merged_contours = []
+            processed = [False] * len(segments)
+            
+            for i in range(len(segments)):
+                if processed[i]:
+                    continue
+                
+                base_contour = segments[i]
+                overlapping = [base_contour]
+                base_rect = cv2.boundingRect(base_contour)
+                
+                for j in range(i + 1, len(segments)):
+                    if processed[j]:
+                        continue
+                    
+                    cnt = segments[j]
+                    cnt_rect = cv2.boundingRect(cnt)
+                    
+                    if (base_rect[1] < cnt_rect[1] + cnt_rect[3] and
+                        base_rect[1] + base_rect[3] > cnt_rect[1]):
+                        overlapping.append(cnt)
+                        processed[j] = True
+                
+                merged_contour = np.vstack(overlapping)
+                merged_contour = cv2.convexHull(merged_contour)
+                merged_contours.append(merged_contour)
+                processed[i] = True
+            
+            segments = merged_contours
+        if enable_plot:
+            plt.figure(100)
+            plt.subplot(2, 2, 1)
+            plt.title('Original Image')
+            plt.imshow(cv2.cvtColor(cropped_image, cv2.COLOR_BGR2RGB))
+            plt.axis('off')
+        
+        max_x = []; max_y = []
+        min_y = []; min_x = []
+        
+        for merged_segment in segments:
+            random_color = tuple(np.random.randint(0, 256, 3).tolist())
+            cv2.drawContours(cropped_image, [merged_segment], -1, random_color, 2)
+            
+            x = [merged_segment[i, 0, 0] for i in range(len(merged_segment))]
+            y = [merged_segment[i, 0, 1] for i in range(len(merged_segment))]
+            
+            max_x.append(np.max(x))
+            max_y.append(np.max(y))
+            min_y.append(np.min(y))
+            min_x.append(np.min(x))
+        
+        if len(min_x) == 1:
+            min_y = int(min_y[0])
+            max_y = int(max_y[0])
+            min_x = int(min_x[0])
+            max_x = int(max_x[0])
+             
+            
+            gray_image_cropped001 = cv2.cvtColor(cropped_image001, cv2.COLOR_BGR2GRAY)
+            _, binary_image_cropped001 = cv2.threshold(gray_image_cropped001, 200, 255, cv2.THRESH_BINARY_INV)
+            contours_cropped001, _ = cv2.findContours(binary_image_cropped001, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            segments = [cnt for cnt in contours_cropped001 if cv2.contourArea(cnt) > 50]
+            
+            for _ in range(5):
+                merged_contours = []
+                processed = [False] * len(segments)
+                
+                for i in range(len(segments)):
+                    if processed[i]:
+                        continue
+                    
+                    base_contour = segments[i]
+                    overlapping = [base_contour]
+                    base_rect = cv2.boundingRect(base_contour)
+                    
+                    for j in range(i + 1, len(segments)):
+                        if processed[j]:
+                            continue
+                        
+                        cnt = segments[j]
+                        cnt_rect = cv2.boundingRect(cnt)
+                        
+                        if (base_rect[1] < cnt_rect[1] + cnt_rect[3] and
+                            base_rect[1] + base_rect[3] > cnt_rect[1]):
+                            overlapping.append(cnt)
+                            processed[j] = True
+                    
+                    merged_contour = np.vstack(overlapping)
+                    merged_contour = cv2.convexHull(merged_contour)
+                    merged_contours.append(merged_contour)
+                    processed[i] = True
+                
+                segments = merged_contours
+            if enable_plot:
+                plt.figure(100)
+                plt.subplot(2, 2, 1)
+                plt.title('Original Image')
+                plt.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+                plt.axis('off')
+            
+            
+             
+            max_x = []; max_y = []
+            min_y = []; min_x = []
+            
+            for merged_segment in segments:
+                random_color = tuple(np.random.randint(0, 256, 3).tolist())
+                cv2.drawContours(cropped_image, [merged_segment], -1, random_color, 2)
+                
+                x = [merged_segment[i, 0, 0] for i in range(len(merged_segment))]
+                y = [merged_segment[i, 0, 1] for i in range(len(merged_segment))]
+                
+                max_x.append(np.max(x))
+                max_y.append(np.max(y))
+                min_y.append(np.min(y))
+                min_x.append(np.min(x))
+        if enable_plot:
+            plt.figure(100)
+            plt.subplot(2, 2, 3)
+            plt.title('Cropped Image (Merged Contours)')
+            plt.imshow(cv2.cvtColor(cropped_image, cv2.COLOR_BGR2RGB))
+            plt.axis('off')
+        
+        S = 0
+        signal_all = []
+        all_results = []
+        
+        LEAD_name = [
+            "i", "ii", "iii", 
+            "avr", "avl", "avf", 
+            "v1", "v2", "v3", 
+            "v4", "v5", "v6", 
+            "vx", "vy", "vz"
+        ]
+        
+        
+        for i in tqdm(range(len(segments)), desc="Processing segments"):
+            merged_segment = segments[i]
+            S = S + 5
+            signal = []
+            Lead_name = 'lead ' + LEAD_name[i]
+            if enable_plot:
+                plt.figure(100)
+                plt.subplot(len(segments), 5, S-2)
+                # if i == 0:
+                plt.title('Cropped Image lead '+Lead_name)
+                # cropped_image001 = image
+                plt.imshow(cv2.cvtColor(cropped_image001[min_y[i]:max_y[i], :], cv2.COLOR_BGR2RGB))
+                plt.axis('off')
+            
+            image_Signal_i = cv2.cvtColor(cropped_image001[min_y[i]:max_y[i], :], cv2.COLOR_BGR2RGB)
+            temp = image_Signal_i.copy()
+            
+            
+            
+            for y in range(np.shape(image_Signal_i)[1]):
+                temp[:, y, 0] = 0
+                image_Signal_iy = image_Signal_i[:, y, 0]
+                index = np.argmin(image_Signal_iy)
+                min_value = min(image_Signal_iy)
+                
+                if not min_value == image_Signal_i[0, 0, 0]:
+                    signal.append(-1 * index)
+            
+            lowpass = scipy.signal.butter(1, 0.5, btype='lowpass', fs=200, output='sos')
+            lowpassed = scipy.signal.sosfilt(lowpass, signal)
+            filtered_signal = signal - lowpassed
+            removed = int(len(filtered_signal) / 10)
+            filtered_signal = filtered_signal[removed:-1 * removed]
+            
+            np.savez('ecg.npz', signal=filtered_signal)
+            
+            ecg_signal = filtered_signal
+            from ECG_EX2 import ECG_extract_qrs2
+            
+            
+            # print('Lead_name =', Lead_name)
+            
+            out_path_image001 = result2_folder + '/' + patteint_no + Lead_name + '.png'
+            # out_path_image='temp.png', lead='Lead II',dpi=100
+            
+            results,Result2 = ECG_extract_qrs2(ecg_signal,  enable_plot )
+            # Close all figures except figure 1
+            
+            results['Lead'] = Lead_name
+            all_results.append(results)
+            signal_all.append(filtered_signal)
+            
+          
+            if enable_plot:
+                plt.figure(100)
+                plt.subplot(len(segments), 5, S-1)
+                plt.plot(filtered_signal)
+                plt.axis('off')
+                if i == 0:
+                    plt.title('OCR Image to signal')
+                
+                
+                
+            
+            
+                    
+            t, ecg_signal, r_peaks, t_peaks, p_peaks, q_peaks, s_peaks,rpeaks = Result2.values()
+            
+            
+            # plt.figure(figsize=(12, 6))
+            if enable_plot:
+                plt.figure(200)
+                plt.subplot(221)
+                plt.plot(t, ecg_signal, label='ECG Signal', color='blue')
+                plt.scatter(t[r_peaks], ecg_signal[r_peaks], color='red', label='R-Peaks')
+                plt.scatter(t[t_peaks], ecg_signal[t_peaks], color='orange', label='T-Peaks')
+                plt.scatter(t[p_peaks], ecg_signal[p_peaks], color='green', label='P-Peaks')
+                plt.scatter(t[q_peaks], ecg_signal[q_peaks], color='purple', label='Q-Peaks')
+                plt.scatter(t[s_peaks], ecg_signal[s_peaks], color='brown', label='S-Peaks')
+                plt.title('ECG Signal with Peaks' + Lead_name)
+                plt.xlabel('Time (s)')
+                plt.ylabel('Amplitude')
+                plt.grid()
+                plt.legend()
+                plt.subplot(122)
+                plt.imshow(plt.imread('temp.png'))
+                plt.axis('off')
+                plt.subplot(223)
+                if len(t_peaks) > 2:  # Ensure there are at least 3 T-peaks
+                    index = np.where(t == t[t_peaks[2]])[0][0]
+                    plt.plot(t[0:index], ecg_signal[0:index], label='ECG Signal', color='blue')
+                    plt.scatter(t[r_peaks[:3]], ecg_signal[r_peaks[:3]], color='red', label='R-Peaks')
+                    plt.scatter(t[t_peaks[:3]], ecg_signal[t_peaks[:3]], color='orange', label='T-Peaks')
+                    plt.scatter(t[p_peaks[:3]], ecg_signal[p_peaks[:3]], color='green', label='P-Peaks')
+                    plt.scatter(t[q_peaks[:3]], ecg_signal[q_peaks[:3]], color='purple', label='Q-Peaks')
+                    plt.scatter(t[s_peaks[:3]], ecg_signal[s_peaks[:3]], color='brown', label='S-Peaks')
+                    plt.title('Zoomed-In ECG Signal with Peaks' + Lead_name)
+                    plt.xlabel('Time (s)')
+                    plt.ylabel('Amplitude')
+                    plt.grid()
+                    plt.legend()
+                 
+                plt.figure(100)
+                plt.subplot(len(segments), 5, S-1)
+                plt.plot(ecg_signal, label='ECG Signal', color='blue')
+                plt.scatter(rpeaks['ECG_R_Peaks'], ecg_signal[rpeaks['ECG_R_Peaks']], color='red', label='R-Peaks')
+                if i == 0:
+                    plt.title('ECG Signal with R-Peaks')
+                plt.xlabel('Time (samples)')
+                plt.ylabel('Amplitude')
+                # plt.legend()
+                
+                plt.subplot(len(segments), 5, S)
+                plt.imshow(plt.imread('temp.png'))
+                plt.axis('off') 
+                
+                
+                plt.figure(200)
+                manager = plt.get_current_fig_manager()
+                manager.full_screen_toggle()
+                ocr_folder_path = f"{ocr_folder}/{patteint_no} Lead {Lead_name}.png"
+                plt.savefig(ocr_folder_path, bbox_inches='tight', pad_inches=0.5, dpi=300)
+                plt.close(200)
+            
 
 
-def process_patient_folder(patient_folder):
-    record_files = list(patient_folder.glob("*.hea"))
-    if not record_files:
-        print(f"No records found in {patient_folder.name}")
-        return
+        if enable_plot:
+            plt.show()
+        segments_all.append(segments)
+        
+        if enable_plot:
+            print(f'Number of merged segments for {filename}: {len(segments)}')
+            ocr_folder_path_all = f"{ocr_folder}/{patteint_no}.png"
+            try:
+                plt.figure(100)
+                manager = plt.get_current_fig_manager()
+                manager.full_screen_toggle()
+                plt.savefig(ocr_folder_path_all, bbox_inches='tight', pad_inches=0.5, dpi=600)
+            except:
+                print('error', ocr_folder_path)
+            
+            plt.close('all')
+        
+        df = pd.DataFrame(all_results)
+        columns = ['Lead'] + [col for col in df.columns if col != 'Lead']
+        df = df[columns]
+        
+        filename_csv = csv_folder + '/ecg_results ' + str(patteint_no) + '.csv'
+        filename_xlsx = csv_folder + '/ecg_results ' + str(patteint_no) + '.xlsx'
+        df.to_csv(filename_csv, index=False)
+        df.to_excel(filename_xlsx, index=False)
 
-    record_name = record_files[0].stem
-    signals, fields = wfdb.rdsamp(str(patient_folder / record_name))
-
-    hea_info = {
-        "n_sig": fields["n_sig"],
-        "fs": fields["fs"],
-        "sig_name": fields["sig_name"],
-        "units": fields["units"],
-        "comments": fields["comments"],
-    }
-
-    xyz_file = list(patient_folder.glob("*.xyz"))
-    xyz_info = None
-    if xyz_file:
-        xyz_info = read_xyz_file(xyz_file[0])
-
-    json_data = {"hea_info": hea_info}
-
-    json_path = f"{json_folder}/{patient_folder.name}.json"
-    with open(json_path, "w") as json_file:
-        json.dump(json_data, json_file, indent=4)
-
-    lead_names = fields["sig_name"]
-    patient_name = patient_folder.name
-    ecg_image_path, ecg_image_path_patt = create_ecg_like_image(
-        signals, lead_names, patient_name
-    )
-
-    image = cv2.imread(ecg_image_path)
-    noisy_image = add_salt_pepper_noise(image)
-    noisy_image_path = f"{noisy_folder}/{patient_name}_noisy.png"
-    cv2.imwrite(noisy_image_path, noisy_image)
-
-    image_patt = cv2.imread(ecg_image_path_patt)
-    noisy_image_patt = add_salt_pepper_noise(image_patt)
-    noisy_image_path_patt = f"{noisy_folder}/pattern_{patient_name}_noisy.png"
-    cv2.imwrite(noisy_image_path_patt, noisy_image_patt)
-
-
-for patient_folder in patient_folders:
-    print(f"Processing {patient_folder.name}...")
-    process_patient_folder(patient_folder)
-
-print("Done!")
+print(f'Number of merged segments: {len(segments_all)}')
